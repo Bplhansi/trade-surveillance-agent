@@ -1,0 +1,134 @@
+# Continuous integration: build the C++ engine and run its tests on every push.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: C++ engine (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      # Needed by the round-trip test: Python writes events, C++ reads them.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The ONNX parity test trains a tiny model in Python (scikit-learn, skl2onnx).
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+
+      - name: Configure
+        shell: bash
+        run: cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
+
+      - name: Build
+        run: cmake --build engine/build --config Release
+
+      - name: Run tests
+        run: ctest --test-dir engine/build -C Release --output-on-failure
+
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test packages
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+  # Run every C++ test with AddressSanitizer + UndefinedBehaviorSanitizer
+  # (they stop the program on memory errors such as reading past the end of an array).
+  sanitizers:
+    name: C++ engine with AddressSanitizer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+
+      - name: Configure (Debug + sanitizers)
+        run: >
+          cmake -S engine -B engine/build-asan -DCMAKE_BUILD_TYPE=Debug
+          -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: cmake --build engine/build-asan -j 4
+
+      - name: Run tests
+        env:
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir engine/build-asan --output-on-failure
+
+  # The one-command demo, from a clean machine.
+  docker-demo:
+    name: Docker one-command demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: docker compose up --build
+        run: docker compose up --build --detach
+
+      # `up --detach` already waits for the pipeline (the dashboard depends on it finishing).
+      - name: Check the pipeline finished successfully
+        run: |
+          docker compose logs pipeline
+          code=$(docker compose ps --all --format '{{.ExitCode}}' pipeline)
+          echo "pipeline exit code: $code"
+          test "$code" = "0"
+
+      - name: Check the note service and dashboard answer
+        run: |
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8501/_stcore/health && break; sleep 2; done
+          curl -fs http://127.0.0.1:8501/_stcore/health
+          curl -fs http://127.0.0.1:8000/health
+          docker compose run --rm --no-deps pipeline python -c "import json; rows=[json.loads(l) for l in open('data/validation.review.jsonl')]; print(len(rows), 'alerts;', sum(r['note']['checks_passed'] for r in rows), 'notes pass the evidence check'); assert rows and all(r['note']['checks_passed'] for r in rows)"
+
+      - name: Engine speed inside Docker (5 runs)
+        run: docker compose run --rm --no-deps pipeline tsa_replay data/train.events.bin --rules config/rules.ini --model models/gradient_boosting.onnx --repeat 5
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop
+        if: always()
+        run: docker compose down --volumes
