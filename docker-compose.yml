@@ -1,0 +1,56 @@
+# One-command demo:   docker compose up --build
+# Then open http://localhost:8501. Ports are bound to this computer only (127.0.0.1).
+# Optional: LLM notes from Ollama running on this computer; see .env.example.
+
+x-app: &app
+  build: .
+  image: trade-surveillance-agent:latest
+
+services:
+  notes:
+    <<: *app
+    command: ["python", "-m", "uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # With LLM_PROVIDER=ollama in .env, reach Ollama running on this computer.
+      OLLAMA_URL: ${OLLAMA_URL_FROM_DOCKER:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  pipeline:
+    <<: *app
+    command: ["sh", "scripts/demo-pipeline.sh"]
+    environment:
+      NOTES_URL: http://notes:8000
+    volumes:
+      - data:/app/data
+      - models:/app/models
+    depends_on:
+      notes:
+        condition: service_healthy
+
+  dashboard:
+    <<: *app
+    command: ["python", "-m", "streamlit", "run", "dashboard/app.py",
+              "--server.address", "0.0.0.0", "--server.port", "8501",
+              "--server.headless", "true", "--browser.gatherUsageStats", "false"]
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - data:/app/data
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+
+volumes:
+  data:
+  models:

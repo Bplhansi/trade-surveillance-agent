@@ -1,0 +1,19 @@
+# Python packages the project needs to run.
+numpy==2.3.3
+matplotlib==3.10.6
+scikit-learn==1.9.1
+joblib==1.6.0
+# ONNX export/runtime for the engine's model. protobuf stays below 7: skl2onnx 1.20.0 fails on protobuf 7.
+skl2onnx==1.20.0
+onnx==1.23.2
+onnxruntime==1.31.1
+protobuf==6.33.6
+# Case note service: FastAPI; httpx calls Ollama and is used by FastAPI's TestClient.
+fastapi==0.162.0
+uvicorn==0.54.0
+python-dotenv==1.2.4
+httpx==0.28.1
+# Review dashboard.
+streamlit==1.66.1
+altair==6.3.0
+pandas==3.1.1

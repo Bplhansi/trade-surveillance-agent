@@ -1,0 +1,5 @@
+# Project-wide Python settings. For now it only configures pytest.
+[tool.pytest.ini_options]
+testpaths = ["sim/tests", "ml/tests", "service/tests", "dashboard/tests"]
+pythonpath = ["."]
+addopts = "-ra"
